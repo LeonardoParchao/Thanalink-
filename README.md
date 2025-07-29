@@ -1,7 +1,7 @@
 # ⚫ Thanálink – OSINT Intelligence Platform
 
 > **Author:** Leonardo Teixeira Parchão  
-> **Version:** 1.5  
+> **Version:** 1.6  
 > **License:** MIT  
 > **Date:** 29/07/2025
 
