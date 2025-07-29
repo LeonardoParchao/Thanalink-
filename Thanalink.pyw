@@ -2,7 +2,7 @@
 Developer: Leonardo Teixeira Parchão
 Date: 29/07/2025
 Project: Thanálink - OSINT Tool
-Version: 1.5
+Version: 1.6
 """
 
 import os
@@ -198,7 +198,7 @@ class DocumentScanner:
 
 
 class GoogleDorking:
-    def __init__(self):
+    def __init__(self): 
         self.options = webdriver.ChromeOptions()
         self.options.add_argument('--headless')
         self.options.add_argument('--disable-gpu')
@@ -209,6 +209,13 @@ class GoogleDorking:
         self.options.add_argument('--disable-features=SiteIsolation')
         self.options.add_argument('--disable-features=site-per-process')
         self.options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3')
+        self.options.add_argument('--no-sandbox')
+        self.options.add_argument('--disable-dev-shm-usage')
+        self.options.add_argument('--disable-gpu-sandbox')
+        self.options.add_argument('--disable-dev-shm-usage')
+        self.options.add_argument('--disable-dev-shm-usage')
+        self.options.add_argument('--disable-dev-shm-usage')
+        self.options.add_argument('--headless=new')
         self.driver = webdriver.Chrome(options=self.options)
     
     def search(self, query, file_type=None, domain=None):
