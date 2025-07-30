@@ -2,7 +2,7 @@
 Developer: Leonardo Teixeira Parchão
 Date: 29/07/2025
 Project: Thanálink - OSINT Tool
-Version: 1.6
+Version: 1.7
 """
 
 import os
@@ -29,50 +29,69 @@ from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
 
 class EmailOsint:
-    def __init__(self, email):
+    """Performs various OSINT checks on an email address."""
+
+    def __init__(self, email: str) -> None:
+        """Initialize the EmailOsint object.
+
+        Args:
+            email (str): The email address to check.
+        """
+        if not isinstance(email, str):
+            raise TypeError("Email must be a string")
+        if not email:
+            raise ValueError("Email cannot be empty")
         self.email = email
 
-    def breach_lookup(self):
+    def breach_lookup(self) -> dict:
+        """Check if the email address has been involved in any known breaches."""
         time.sleep(0.4)  
-        url = f"https://haveibeenpwned.com/unifiedsearch/{self.email}"
+        url = f"https://haveibeenpwned.com/unifiedsearch/{urllib.parse.quote(self.email)}"
         headers = {"User-Agent": "OSINT-Tool/1.0"}
         try:
             response = requests.get(url, headers=headers, timeout=10)
-            return response.json() if response.status_code == 200 else {"Breaches": []}
-        except Exception:
-            return {"Breaches": []}
+            response.raise_for_status()
+            return response.json()
+        except requests.HTTPError as e:
+            if e.response.status_code == 404:
+                return {"Breaches": []}
+            raise
+        except Exception as e:
+            raise RuntimeError(f"Failed to perform breach lookup: {e}") from e
 
-    def find_email_links(self):
+    def find_email_links(self) -> list:
+        """Find any publicly available information about the email address."""
         url = f"https://whatsmyname.app/?q={urllib.parse.quote(self.email)}"
         headers = {"User-Agent": "OSINT-Tool/1.0"}
         try:
             response = requests.get(url, headers=headers, timeout=15)
+            response.raise_for_status()
             soup = BeautifulSoup(response.text, 'html.parser')
             links = [a['href'] for a in soup.select('tr:not(:first-child) a[href]')]
             return links
-        except Exception:
-            return []
+        except Exception as e:
+            raise RuntimeError(f"Failed to find email links: {e}") from e
 
-    def mx_smtp_validation(self):
+    def mx_smtp_validation(self) -> bool:
+        """Check if the email address has a valid MX record and responds to an SMTP request."""
         try:
             domain = self.email.split('@')[-1]
             answers = dns.resolver.resolve(domain, 'MX')
             mx_records = [r.exchange.to_text().rstrip('.') for r in answers]
-            
             for mx in mx_records:
-                try:
-                    with smtplib.SMTP(mx, timeout=5) as server:
-                        server.helo()
-                    return True
-                except Exception:
-                    continue
-            return False
+                with smtplib.SMTP(mx, timeout=5) as server:
+                    server.helo()
+            return True
         except Exception:
             return False
 
 
 class UsernameSearch:
     def __init__(self, username):
+        if not isinstance(username, str):
+            raise TypeError("Username must be a string")
+        if not username:
+            raise ValueError("Username cannot be empty")
         self.username = username
         self.platforms = {
             'GitHub': f'https://github.com/{username}',
@@ -88,36 +107,45 @@ class UsernameSearch:
         for platform, url in self.platforms.items():
             try:
                 response = requests.get(url, timeout=5, allow_redirects=False)
+                if response is None:
+                    raise RuntimeError("Failed to retrieve search results")
                 results[platform] = response.status_code == 200
-            except Exception:
-                results[platform] = False
+            except requests.exceptions.RequestException as e:
+                raise RuntimeError(f"Failed to retrieve search results for {platform}: {e}") from e
+            except Exception as e:
+                raise RuntimeError(f"An unexpected error occurred while searching for {platform}: {e}") from e
         return results
 
 
 class DomainOsint:
     def __init__(self, domain):
+        if not isinstance(domain, str):
+            raise TypeError("Domain must be a string")
+        if not domain:
+            raise ValueError("Domain cannot be empty")
         self.domain = domain
 
     def whois_lookup(self):
         url = f'https://www.whois.com/whois/{self.domain}'
+        response = None
         try:
             response = requests.get(url, timeout=10)
-            return response.text if response.status_code == 200 else "WHOIS data not available"
-        except Exception:
-            return "WHOIS data not available"
+            response.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            raise RuntimeError(f"Failed to perform whois lookup: {e}") from e
+        return response.text if response else "WHOIS data not available"
 
     def subdomain_enumeration(self):
         try:
             answers = dns.resolver.resolve(self.domain, 'NS')
             return [r.to_text().rstrip('.').split('.', 1)[0] for r in answers]
-        except Exception:
-            return []
+        except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.resolver.NoNameservers) as e:
+            raise RuntimeError(f"Failed to perform subdomain enumeration: {e}") from e
 
     def port_scan(self, top_ports=10):
         common_ports = [21, 22, 23, 25, 53, 80, 110, 443, 445, 3389]
         ports = common_ports[:min(top_ports, len(common_ports))]
         open_ports = []
-        
         try:
             ip = socket.gethostbyname(self.domain)
             for port in ports:
@@ -126,34 +154,41 @@ class DomainOsint:
                     if sock.connect_ex((ip, port)) == 0:
                         open_ports.append(port)
             return open_ports
-        except Exception:
-            return []
+        except (socket.gaierror, socket.herror) as e:
+            raise RuntimeError(f"Failed to perform port scan: {e}") from e
 
 
 class DocumentScanner:
     def __init__(self, file_path):
+        if not isinstance(file_path, str):
+            raise TypeError("File path must be a string")
+        if not file_path:
+            raise ValueError("File path cannot be empty")
         self.file_path = file_path
 
     def scan(self):
         if not os.path.exists(self.file_path):
-            raise Exception("File does not exist")
+            raise RuntimeError("File does not exist")
             
         if self.file_path.lower().endswith(('.png', '.jpg', '.jpeg', '.tiff', '.bmp', '.gif')):
             return self.scan_image()
         elif self.file_path.lower().endswith('.pdf'):
             return self.scan_pdf()
         else:
-            raise Exception("Unsupported file type")
+            raise RuntimeError("Unsupported file type")
 
     def scan_image(self):
-        with Image.open(self.file_path) as img:
-            info = img.info
-            return {
-                'author': info.get('Author', 'N/A'),
-                'created': info.get('Creation Time', 'N/A'),
-                'modified': info.get('Modify Date', 'N/A'),
-                'software': info.get('Software', 'N/A')
-            }
+        try:
+            with Image.open(self.file_path) as img:
+                info = img.info or {}
+                return {
+                    'author': info.get('Author', 'N/A'),
+                    'created': info.get('Creation Time', 'N/A'),
+                    'modified': info.get('Modify Date', 'N/A'),
+                    'software': info.get('Software', 'N/A')
+                }
+        except Exception as e:
+            raise RuntimeError(f"Failed to scan image: {e}") from e
 
     def scan_pdf(self):
         try:
@@ -166,13 +201,8 @@ class DocumentScanner:
                     'modified': metadata.get('/ModDate', 'N/A'),
                     'software': metadata.get('/Creator', 'N/A')
                 }
-        except Exception:
-            return {
-                'author': 'N/A',
-                'created': 'N/A',
-                'modified': 'N/A',
-                'software': 'N/A'
-            }
+        except Exception as e:
+            raise RuntimeError(f"Failed to scan PDF: {e}") from e
 
     def extract_content(self):
         results = {'emails': [], 'domains': [], 'links': []}
@@ -193,12 +223,13 @@ class DocumentScanner:
                 results['links'] = list(set(re.findall(r'https?://[^\s]+', text)))
                 
             return results
-        except Exception:
-            return results
+        except Exception as e:
+            raise RuntimeError(f"Failed to extract content from PDF: {e}") from e
 
 
 class GoogleDorking:
-    def __init__(self): 
+    def __init__(self):
+        self.driver = None
         self.options = webdriver.ChromeOptions()
         self.options.add_argument('--headless')
         self.options.add_argument('--disable-gpu')
@@ -212,40 +243,40 @@ class GoogleDorking:
         self.options.add_argument('--no-sandbox')
         self.options.add_argument('--disable-dev-shm-usage')
         self.options.add_argument('--disable-gpu-sandbox')
-        self.options.add_argument('--disable-dev-shm-usage')
-        self.options.add_argument('--disable-dev-shm-usage')
-        self.options.add_argument('--disable-dev-shm-usage')
         self.options.add_argument('--headless=new')
-        self.driver = webdriver.Chrome(options=self.options)
-    
+
+    def _initialize_driver(self):
+        if self.driver is None:
+            self.driver = webdriver.Chrome(options=self.options)
+
     def search(self, query, file_type=None, domain=None):
+        self._initialize_driver()
         query_parts = [f'"{query}"']
         if file_type:
             query_parts.append(f"filetype:{file_type}")
         if domain:
             query_parts.append(f"site:{domain}")
-        time.sleep(random.uniform(1.5, 3.5)) 
+        time.sleep(random.uniform(1.5, 3.5))
         full_query = " ".join(query_parts)
         url = f"https://www.google.com/search?q={urllib.parse.quote(full_query)}"
         self.driver.get(url)
-        time.sleep(random.uniform(2, 3)) 
+        time.sleep(random.uniform(2, 3))
         soup = BeautifulSoup(self.driver.page_source, 'html.parser')
         return [
             urllib.parse.unquote(href.split('/url?q=')[1].split('&')[0])
             for a in soup.find_all('a', href=True)
             if (href := a['href']).startswith('/url?q=')
         ]
-    
+
     def get_results(self, query_parts):
         """Retrieve search results from Google"""
-        # Select a random user agent
+        self._initialize_driver()
         user_agent = random.choice([
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3',
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:53.0) Gecko/20100101 Firefox/53.0',
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/51.0.2704.79 Safari/537.36 Edge/14.14393'
         ])
         self.options.add_argument(f"--user-agent={user_agent}")
-        self.driver = webdriver.Chrome(options=self.options)
         self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         self.driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
             "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
@@ -261,9 +292,9 @@ class GoogleDorking:
             for a in soup.find_all('a', href=True)
             if (href := a['href']).startswith('/url?q=')
         ]
-    
+
     def __del__(self):
-        if hasattr(self, 'driver'):
+        if self.driver:
             self.driver.quit()
 
 
@@ -273,12 +304,19 @@ class Worker(QObject):
 
     def __init__(self, task, *args):
         super().__init__()
+        if task is None:
+            raise ValueError("Task cannot be null")
         self.task = task
         self.args = args
         self._is_running = True
 
     def run(self):
+        if not self._is_running:
+            raise RuntimeError("Worker is not running")
+
         try:
+            if self.task is None:
+                raise ValueError("Task is null")
             result = self.task(*self.args)
             self.finished.emit(result)
         except Exception as e:
@@ -293,6 +331,9 @@ class ThreadController:
         self.threads = []
 
     def start_worker(self, worker):
+        if worker is None:
+            raise ValueError("Worker cannot be null")
+        
         thread = QThread()
         worker.moveToThread(thread)
         
@@ -319,7 +360,11 @@ class ThreadController:
             self.threads.remove(thread)
 
     def shutdown(self):
+        if self.threads is None:
+            return
         for thread in self.threads:
+            if thread is None:
+                continue
             if thread.isRunning():
                 thread.quit()
                 thread.wait(2000)
@@ -509,10 +554,13 @@ class OSINTTool(QMainWindow):
         self.email_results.clear()
         self.email_results.append("Checking breaches...")
         
-        worker = Worker(EmailOsint(email).breach_lookup)
-        worker.finished.connect(self.handle_breach_results)
-        worker.error.connect(lambda e: self.email_results.append(f"Error: {e}"))
-        self.thread_controller.start_worker(worker)
+        try:
+            worker = Worker(EmailOsint(email).breach_lookup)
+            worker.finished.connect(self.handle_breach_results)
+            worker.error.connect(lambda e: self.email_results.append(f"Error: {e}"))
+            self.thread_controller.start_worker(worker)
+        except Exception as e:
+            self.email_results.append(f"Error: {str(e)}")
 
     def handle_breach_results(self, results):
         breaches = results.get("Breaches", [])
@@ -535,10 +583,13 @@ class OSINTTool(QMainWindow):
         self.email_results.clear()
         self.email_results.append("Finding associated links...")
         
-        worker = Worker(EmailOsint(email).find_email_links)
-        worker.finished.connect(self.handle_email_links)
-        worker.error.connect(lambda e: self.email_results.append(f"Error: {e}"))
-        self.thread_controller.start_worker(worker)
+        try:
+            worker = Worker(EmailOsint(email).find_email_links)
+            worker.finished.connect(self.handle_email_links)
+            worker.error.connect(lambda e: self.email_results.append(f"Error: {e}"))
+            self.thread_controller.start_worker(worker)
+        except Exception as e:
+            self.email_results.append(f"Error: {str(e)}")
 
     def handle_email_links(self, links):
         if not links:
@@ -557,10 +608,13 @@ class OSINTTool(QMainWindow):
         self.email_results.clear()
         self.email_results.append("Validating MX records...")
         
-        worker = Worker(EmailOsint(email).mx_smtp_validation)
-        worker.finished.connect(self.handle_mx_validation)
-        worker.error.connect(lambda e: self.email_results.append(f"Error: {e}"))
-        self.thread_controller.start_worker(worker)
+        try:
+            worker = Worker(EmailOsint(email).mx_smtp_validation)
+            worker.finished.connect(self.handle_mx_validation)
+            worker.error.connect(lambda e: self.email_results.append(f"Error: {e}"))
+            self.thread_controller.start_worker(worker)
+        except Exception as e:
+            self.email_results.append(f"Error: {str(e)}")
 
     def handle_mx_validation(self, valid):
         self.email_results.append(
@@ -576,10 +630,13 @@ class OSINTTool(QMainWindow):
         self.domain_results.clear()
         self.domain_results.append("Running WHOIS lookup...")
         
-        worker = Worker(DomainOsint(domain).whois_lookup)
-        worker.finished.connect(self.handle_whois_results)
-        worker.error.connect(lambda e: self.domain_results.append(f"Error: {e}"))
-        self.thread_controller.start_worker(worker)
+        try:
+            worker = Worker(DomainOsint(domain).whois_lookup)
+            worker.finished.connect(self.handle_whois_results)
+            worker.error.connect(lambda e: self.domain_results.append(f"Error: {e}"))
+            self.thread_controller.start_worker(worker)
+        except Exception as e:
+            self.domain_results.append(f"Error: {str(e)}")
 
     def handle_whois_results(self, result):
         self.domain_results.setPlainText(result)
@@ -592,10 +649,13 @@ class OSINTTool(QMainWindow):
         self.domain_results.clear()
         self.domain_results.append("Finding subdomains...")
         
-        worker = Worker(DomainOsint(domain).subdomain_enumeration)
-        worker.finished.connect(self.handle_subdomain_results)
-        worker.error.connect(lambda e: self.domain_results.append(f"Error: {e}"))
-        self.thread_controller.start_worker(worker)
+        try:
+            worker = Worker(DomainOsint(domain).subdomain_enumeration)
+            worker.finished.connect(self.handle_subdomain_results)
+            worker.error.connect(lambda e: self.domain_results.append(f"Error: {e}"))
+            self.thread_controller.start_worker(worker)
+        except Exception as e:
+            self.domain_results.append(f"Error: {str(e)}")
 
     def handle_subdomain_results(self, subdomains):
         if not subdomains:
@@ -614,10 +674,13 @@ class OSINTTool(QMainWindow):
         self.domain_results.clear()
         self.domain_results.append("Scanning ports...")
         
-        worker = Worker(DomainOsint(domain).port_scan)
-        worker.finished.connect(self.handle_port_scan_results)
-        worker.error.connect(lambda e: self.domain_results.append(f"Error: {e}"))
-        self.thread_controller.start_worker(worker)
+        try:
+            worker = Worker(DomainOsint(domain).port_scan)
+            worker.finished.connect(self.handle_port_scan_results)
+            worker.error.connect(lambda e: self.domain_results.append(f"Error: {e}"))
+            self.thread_controller.start_worker(worker)
+        except Exception as e:
+            self.domain_results.append(f"Error: {str(e)}")
 
     def handle_port_scan_results(self, open_ports):
         if not open_ports:
@@ -637,10 +700,13 @@ class OSINTTool(QMainWindow):
         self.username_results.clear()
         self.username_results.append(f"Searching for {username}...")
         
-        worker = Worker(UsernameSearch(username).search)
-        worker.finished.connect(self.handle_username_results)
-        worker.error.connect(lambda e: self.username_results.append(f"Error: {e}"))
-        self.thread_controller.start_worker(worker)
+        try:
+            worker = Worker(UsernameSearch(username).search)
+            worker.finished.connect(self.handle_username_results)
+            worker.error.connect(lambda e: self.username_results.append(f"Error: {e}"))
+            self.thread_controller.start_worker(worker)
+        except Exception as e:
+            self.username_results.append(f"Error: {str(e)}")
 
     def handle_username_results(self, results):
         self.username_results.clear()
@@ -667,10 +733,13 @@ class OSINTTool(QMainWindow):
         self.document_results.clear()
         self.document_results.append("Scanning document metadata...")
         
-        worker = Worker(DocumentScanner(file_path).scan)
-        worker.finished.connect(self.handle_document_scan)
-        worker.error.connect(lambda e: self.document_results.append(f"Error: {e}"))
-        self.thread_controller.start_worker(worker)
+        try:
+            worker = Worker(DocumentScanner(file_path).scan)
+            worker.finished.connect(self.handle_document_scan)
+            worker.error.connect(lambda e: self.document_results.append(f"Error: {e}"))
+            self.thread_controller.start_worker(worker)
+        except Exception as e:
+            self.document_results.append(f"Error: {str(e)}")
 
     def handle_document_scan(self, metadata):
         if isinstance(metadata, str): 
@@ -693,10 +762,13 @@ class OSINTTool(QMainWindow):
         self.document_results.clear()
         self.document_results.append("Extracting content...")
         
-        worker = Worker(DocumentScanner(file_path).extract_content)
-        worker.finished.connect(self.handle_document_extract)
-        worker.error.connect(lambda e: self.document_results.append(f"Error: {e}"))
-        self.thread_controller.start_worker(worker)
+        try:
+            worker = Worker(DocumentScanner(file_path).extract_content)
+            worker.finished.connect(self.handle_document_extract)
+            worker.error.connect(lambda e: self.document_results.append(f"Error: {e}"))
+            self.thread_controller.start_worker(worker)
+        except Exception as e:
+            self.document_results.append(f"Error: {str(e)}")
 
     def handle_document_extract(self, content):
         self.document_results.clear()
@@ -734,10 +806,13 @@ class OSINTTool(QMainWindow):
         self.dorking_results.append("Searching...")
         self.progress_bar.setValue(0)
         
-        worker = Worker(GoogleDorking().search, query, file_type, domain)
-        worker.finished.connect(self.handle_dorking_results)
-        worker.error.connect(lambda e: self.dorking_results.append(f"Error: {e}"))
-        self.thread_controller.start_worker(worker)
+        try:
+            worker = Worker(GoogleDorking().search, query, file_type, domain)
+            worker.finished.connect(self.handle_dorking_results)
+            worker.error.connect(lambda e: self.dorking_results.append(f"Error: {e}"))
+            self.thread_controller.start_worker(worker)
+        except Exception as e:
+            self.dorking_results.append(f"Error: {str(e)}")
 
     def handle_dorking_results(self, results):
         self.progress_bar.setValue(100)
