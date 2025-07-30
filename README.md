@@ -1,9 +1,9 @@
 # ⚫ Thanálink – OSINT Intelligence Platform
 
 > **Author:** Leonardo Teixeira Parchão  
-> **Version:** 1.6  
+> **Version:** 1.7  
 > **License:** MIT  
-> **Date:** 29/07/2025
+> **Date:** 30/07/2025
 
 **Thanálink** is a Python-based Open Source Intelligence (OSINT) platform designed to trace and reveal digital footprints across multiple vectors. Named after *Thanatos*, the Greek personification of death, Thanálink follows quiet, fatal connections in open data — where every link might lead to revelation.
 
