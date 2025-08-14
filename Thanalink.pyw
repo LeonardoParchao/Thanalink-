@@ -1,6 +1,6 @@
 """ 
 Developer: Leonardo Teixeira Parchão
-Date: 29/07/2025
+Date: 14/08/2025
 Project: Thanálink - OSINT Tool
 Version: 1.8
 """
@@ -918,3 +918,4 @@ if __name__ == '__main__':
     window = OSINTTool()
     window.show()
     app.exec_()
+
