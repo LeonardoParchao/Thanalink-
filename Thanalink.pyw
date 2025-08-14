@@ -2,13 +2,13 @@
 Developer: Leonardo Teixeira Parchão
 Date: 29/07/2025
 Project: Thanálink - OSINT Tool
-Version: 1.7
+Version: 1.8
 """
+
 
 import os
 import re
 import time
-import socket
 import smtplib
 import urllib.parse
 import dns.resolver
@@ -27,73 +27,77 @@ from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
+from typing import Dict, List, Set
 
 class EmailOsint:
     """Performs various OSINT checks on an email address."""
 
-    def __init__(self, email: str) -> None:
-        """Initialize the EmailOsint object.
+    def __init__(self, email_address: str) -> None:
+        """Initialize the EmailOsint object."""
+        if not isinstance(email_address, str):
+            raise TypeError("Email address must be a string")
+        if not email_address:
+            raise ValueError("Email address cannot be empty")
+        self._email_address = email_address
 
-        Args:
-            email (str): The email address to check.
-        """
-        if not isinstance(email, str):
-            raise TypeError("Email must be a string")
-        if not email:
-            raise ValueError("Email cannot be empty")
-        self.email = email
-
-    def breach_lookup(self) -> dict:
+    def check_for_breaches(self) -> dict:
         """Check if the email address has been involved in any known breaches."""
-        time.sleep(0.4)  
-        url = f"https://haveibeenpwned.com/unifiedsearch/{urllib.parse.quote(self.email)}"
+        url = (
+            f"https://haveibeenpwned.com/unifiedsearch/{urllib.parse.quote(self._email_address)}"
+        )
         headers = {"User-Agent": "OSINT-Tool/1.0"}
         try:
             response = requests.get(url, headers=headers, timeout=10)
             response.raise_for_status()
-            return response.json()
-        except requests.HTTPError as e:
-            if e.response.status_code == 404:
+            return response.json() if response.content else {"Breaches": []}
+        except requests.exceptions.RequestException as e:
+            if e.response is not None and e.response.status_code == 404:
                 return {"Breaches": []}
-            raise
-        except Exception as e:
             raise RuntimeError(f"Failed to perform breach lookup: {e}") from e
 
-    def find_email_links(self) -> list:
+    def find_public_info(self) -> list[str]:
         """Find any publicly available information about the email address."""
-        url = f"https://whatsmyname.app/?q={urllib.parse.quote(self.email)}"
+        url = (
+            f"https://whatsmyname.app/?q={urllib.parse.quote(self._email_address)}"
+        )
         headers = {"User-Agent": "OSINT-Tool/1.0"}
         try:
             response = requests.get(url, headers=headers, timeout=15)
             response.raise_for_status()
+            if not response.content:
+                return []
             soup = BeautifulSoup(response.text, 'html.parser')
-            links = [a['href'] for a in soup.select('tr:not(:first-child) a[href]')]
-            return links
-        except Exception as e:
-            raise RuntimeError(f"Failed to find email links: {e}") from e
+            return [a['href'] for a in soup.select('tr:not(:first-child) a[href]')]
+        except requests.exceptions.RequestException as e:
+            raise RuntimeError(f"Failed to find public information: {e}") from e
 
-    def mx_smtp_validation(self) -> bool:
+    def validate_mx_record(self) -> bool:
         """Check if the email address has a valid MX record and responds to an SMTP request."""
         try:
-            domain = self.email.split('@')[-1]
+            domain = self._email_address.split('@')[-1]
             answers = dns.resolver.resolve(domain, 'MX')
             mx_records = [r.exchange.to_text().rstrip('.') for r in answers]
             for mx in mx_records:
-                with smtplib.SMTP(mx, timeout=5) as server:
+                with smtplib.SMTP(timeout=5) as server:
+                    server.connect(mx)
                     server.helo()
             return True
-        except Exception:
-            return False
+        except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, 
+                dns.resolver.NoNameservers, smtplib.SMTPException) as e:
+            raise RuntimeError(f"Failed to validate MX record: {e}") from e
 
 
 class UsernameSearch:
-    def __init__(self, username):
+    """Searches for a username on various platforms."""
+
+    def __init__(self, username: str) -> None:
+        """Initialize the UsernameSearch object."""
         if not isinstance(username, str):
             raise TypeError("Username must be a string")
         if not username:
             raise ValueError("Username cannot be empty")
-        self.username = username
-        self.platforms = {
+        self._username = username
+        self._platform_urls = {
             'GitHub': f'https://github.com/{username}',
             'Twitter': f'https://twitter.com/{username}',
             'Instagram': f'https://instagram.com/{username}',
@@ -102,82 +106,135 @@ class UsernameSearch:
             'Reddit': f'https://reddit.com/user/{username}',
         }
 
-    def search(self):
-        results = {}
-        for platform, url in self.platforms.items():
-            try:
-                response = requests.get(url, timeout=5, allow_redirects=False)
-                if response is None:
-                    raise RuntimeError("Failed to retrieve search results")
-                results[platform] = response.status_code == 200
-            except requests.exceptions.RequestException as e:
-                raise RuntimeError(f"Failed to retrieve search results for {platform}: {e}") from e
-            except Exception as e:
-                raise RuntimeError(f"An unexpected error occurred while searching for {platform}: {e}") from e
-        return results
+    def search(self) -> dict[str, bool]:
+        """Search for the username on various platforms."""
+        with requests.Session() as session:
+            session.headers.update({
+                'User-Agent': 'OSINT-Tool/1.0'
+            })
+            futures = []
+            for platform, url in self._platform_urls.items():
+                futures.append(
+                    self._async_search(session, platform, url)
+                )
+            return {
+                platform: result.result() if result.exception() is None else False
+                for platform, result in zip(self._platform_urls, futures)
+            }
+
+    @staticmethod
+    async def _async_search(session, platform, url):
+        try:
+            response = await session.get(url, timeout=5, allow_redirects=False)
+            return response.status_code == 200
+        except requests.exceptions.RequestException as error:
+            if error.response is not None:
+                return False
+            else:
+                raise RuntimeError(
+                    f"Failed to retrieve search results for {platform}: {error}"
+                ) from error
+        except Exception as error:
+            if error.args:
+                raise RuntimeError(
+                    f"An unexpected error occurred while searching for {platform}: {error}"
+                ) from error
 
 
 class DomainOsint:
-    def __init__(self, domain):
+    """Performs Open Source Intelligence (OSINT) on a domain."""
+
+    def __init__(self, domain: str) -> None:
+        """Initialize the DomainOsint object."""
         if not isinstance(domain, str):
             raise TypeError("Domain must be a string")
         if not domain:
             raise ValueError("Domain cannot be empty")
-        self.domain = domain
+        self._domain = domain
 
-    def whois_lookup(self):
-        url = f'https://www.whois.com/whois/{self.domain}'
-        response = None
+    @property
+    def domain(self) -> str:
+        """Get the domain."""
+        return self._domain
+
+    async def whois_lookup(self) -> str:
+        """Perform a WHOIS lookup on the domain."""
+        url = f"https://www.whois.com/whois/{self.domain}"
         try:
-            response = requests.get(url, timeout=10)
-            response.raise_for_status()
-        except requests.exceptions.RequestException as e:
-            raise RuntimeError(f"Failed to perform whois lookup: {e}") from e
-        return response.text if response else "WHOIS data not available"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url) as response:
+                    response.raise_for_status()
+                    if not response.content:
+                        raise RuntimeError("Failed to retrieve WHOIS lookup results")
+                    return await response.text()
+        except aiohttp.ClientError as error:
+            raise RuntimeError(
+                f"Failed to perform WHOIS lookup: {error}"
+            ) from error
 
-    def subdomain_enumeration(self):
+    async def subdomain_enumeration(self) -> list[str]:
+        """Enumerate subdomains of the domain."""
         try:
-            answers = dns.resolver.resolve(self.domain, 'NS')
-            return [r.to_text().rstrip('.').split('.', 1)[0] for r in answers]
-        except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.resolver.NoNameservers) as e:
-            raise RuntimeError(f"Failed to perform subdomain enumeration: {e}") from e
+            answers = await aiodns.DNS.resolve(self.domain, "NS")
+            subdomains = [
+                rdata.to_text().rstrip(".").split(".", 1)[0]
+                for rdata in answers
+                if rdata.to_text().rstrip(".").split(".", 1)[0] != self.domain
+            ]
+            if not subdomains:
+                raise RuntimeError("Failed to retrieve subdomains")
+            return subdomains
+        except (aiodns.error.DNSException, aiodns.error.AddressFormatError) as error:
+            raise RuntimeError(
+                f"Failed to perform subdomain enumeration: {error}"
+            ) from error
 
-    def port_scan(self, top_ports=10):
+    async def port_scan(self, top_ports: int = 10) -> list[int]:
+        """Scan for open ports on the domain."""
         common_ports = [21, 22, 23, 25, 53, 80, 110, 443, 445, 3389]
-        ports = common_ports[:min(top_ports, len(common_ports))]
+        ports = common_ports[: min(top_ports, len(common_ports))]
         open_ports = []
         try:
-            ip = socket.gethostbyname(self.domain)
+            ip = await aiodns.DNS.resolve(self.domain, "A")
             for port in ports:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                    sock.settimeout(1)
-                    if sock.connect_ex((ip, port)) == 0:
-                        open_ports.append(port)
+                async with aiohttp.ClientSession() as session:
+                    async with session.head(
+                        f"http://{ip}:{port}", timeout=1
+                    ) as response:
+                        if response.status == 200:
+                            open_ports.append(port)
+            if not open_ports:
+                raise RuntimeError("Failed to retrieve open ports")
             return open_ports
-        except (socket.gaierror, socket.herror) as e:
-            raise RuntimeError(f"Failed to perform port scan: {e}") from e
+        except (aiodns.error.DNSException, aiodns.error.AddressFormatError, aiohttp.ClientError) as error:
+            raise RuntimeError(
+                f"Failed to perform port scan: {error}"
+            ) from error
 
 
 class DocumentScanner:
-    def __init__(self, file_path):
+    """Scan a document for metadata and extract content."""
+
+    def __init__(self, file_path: str) -> None:
+        """Initialize the scanner with a file path."""
         if not isinstance(file_path, str):
             raise TypeError("File path must be a string")
         if not file_path:
             raise ValueError("File path cannot be empty")
         self.file_path = file_path
 
-    def scan(self):
+    def scan(self) -> Dict[str, str]:
+        """Scan the document and return the metadata as a dictionary."""
         if not os.path.exists(self.file_path):
             raise RuntimeError("File does not exist")
-            
         if self.file_path.lower().endswith(('.png', '.jpg', '.jpeg', '.tiff', '.bmp', '.gif')):
-            return self.scan_image()
-        elif self.file_path.lower().endswith('.pdf'):
-            return self.scan_pdf()
-        else:
-            raise RuntimeError("Unsupported file type")
+            return self._scan_image()
+        if self.file_path.lower().endswith('.pdf'):
+            return self._scan_pdf()
+        raise RuntimeError("Unsupported file type")
 
-    def scan_image(self):
+    def _scan_image(self) -> Dict[str, str]:
+        """Scan the image and return the metadata as a dictionary."""
         try:
             with Image.open(self.file_path) as img:
                 info = img.info or {}
@@ -187,10 +244,11 @@ class DocumentScanner:
                     'modified': info.get('Modify Date', 'N/A'),
                     'software': info.get('Software', 'N/A')
                 }
-        except Exception as e:
-            raise RuntimeError(f"Failed to scan image: {e}") from e
+        except IOError as e:
+            raise RuntimeError("Failed to open image") from e
 
-    def scan_pdf(self):
+    def _scan_pdf(self) -> Dict[str, str]:
+        """Scan the PDF and return the metadata as a dictionary."""
         try:
             with open(self.file_path, 'rb') as f:
                 pdf = PyPDF2.PdfReader(f)
@@ -201,30 +259,26 @@ class DocumentScanner:
                     'modified': metadata.get('/ModDate', 'N/A'),
                     'software': metadata.get('/Creator', 'N/A')
                 }
-        except Exception as e:
-            raise RuntimeError(f"Failed to scan PDF: {e}") from e
+        except PyPDF2.PdfReadError as e:
+            raise RuntimeError("Failed to read PDF") from e
 
-    def extract_content(self):
+    def extract_content(self) -> Dict[str, List[str]]:
+        """Extract content from the document and return a dictionary of emails, domains, and links."""
         results = {'emails': [], 'domains': [], 'links': []}
         if not self.file_path.lower().endswith('.pdf'):
             return results
-            
         try:
             with open(self.file_path, 'rb') as f:
                 pdf = PyPDF2.PdfReader(f)
                 text = "".join(page.extract_text() or "" for page in pdf.pages)
-                
-                emails = set(re.findall(r'[\w\.-]+@[\w\.-]+', text))
+                emails: Set[str] = set(re.findall(r'[\w\.-]+@[\w\.-]+', text))
                 results['emails'] = list(emails)
-                
-                domains = set(email.split('@')[-1] for email in emails)
+                domains: Set[str] = {email.split('@')[-1] for email in emails}
                 results['domains'] = list(domains)
-                
                 results['links'] = list(set(re.findall(r'https?://[^\s]+', text)))
-                
-            return results
-        except Exception as e:
-            raise RuntimeError(f"Failed to extract content from PDF: {e}") from e
+                return results
+        except PyPDF2.PdfReadError as e:
+            raise RuntimeError("Failed to read PDF") from e
 
 
 class GoogleDorking:
